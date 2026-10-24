@@ -1,0 +1,22 @@
+name: Windows build tests and experiments
+on: [push, workflow_dispatch]
+jobs:
+  lab:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build test measure and prepare report
+        shell: pwsh
+        run: ./scripts/windows.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lab04-windows-results
+          path: |
+            data/windows/
+            report/report.md
+            report/report.docx
+            build-windows/Release/philosophers.exe

@@ -130,6 +130,7 @@ void run(Worker& w) {
         int second = id%2 == 0 ? right : left;
         if (x.c.mode == "ordered") { first = std::min(left, right); second = std::max(left, right); }
         const double waiting = os::now_ms();
+        const double eating_before = s.eating_ms;
         bool ate = false;
         while (!x.stop.wait(0) && !ate) {
             ++s.attempts;
@@ -143,7 +144,7 @@ void run(Worker& w) {
                     if (remaining <= 0 || !b.acquire(static_cast<uint32_t>(std::ceil(remaining)))) retry = true;
                     else if (!x.stop.wait(0)) {
                         const double wait = os::now_ms() - waiting;
-                        s.wait_success += wait; s.wait_max = std::max(s.wait_max, wait);
+                        s.wait_max = std::max(s.wait_max, wait);
                         {
                             os::Guard g(x.monitor);
                             x.check(x.owners[left] == id && x.owners[right] == id);
@@ -156,7 +157,7 @@ void run(Worker& w) {
                         bool interrupted = x.stop.wait(delay(x.c.eat, x.c.jitter, rng));
                         s.eating_ms += os::now_ms() - eating_start;
                         { os::Guard g(x.monitor); x.eating[id] = false; }
-                        if (!interrupted) { ++s.completed; ate = true; }
+                        if (!interrupted) { ++s.completed; s.wait_success += wait; ate = true; }
                     }
                 }
             } // reverse release, including first fork on timeout
@@ -165,8 +166,7 @@ void run(Worker& w) {
                 if (x.stop.wait(1 + random_next(rng)%3)) break;
             }
         }
-        s.wait_total += os::now_ms() - waiting;
-        // wait_total must exclude time eating; successful wait is measured separately.
+        s.wait_total += os::now_ms() - waiting - (s.eating_ms - eating_before);
         if (ate) x.log(id, "CYCLE_DONE");
     }
     x.log(id, s.completed == x.c.cycles ? "FINISHED" : "CANCELLED");
@@ -228,7 +228,7 @@ int execute(Config c) {
         auto& s = x.workers[i].stats;
         out << "    {\"id\":" << i << ",\"tid\":" << s.tid << ",\"completed\":" << s.completed
             << ",\"attempts\":" << s.attempts << ",\"timeouts\":" << s.timeouts
-            << ",\"wait_success_ms\":" << s.wait_success << ",\"max_wait_ms\":" << s.wait_max
+            << ",\"wait_total_ms\":" << s.wait_total << ",\"wait_success_ms\":" << s.wait_success << ",\"max_wait_ms\":" << s.wait_max
             << ",\"eating_ms\":" << s.eating_ms << "}" << (i+1<x.workers.size() ? "," : "") << '\n';
     }
     out << "  ]\n}\n";
