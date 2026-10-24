@@ -1,0 +1,32 @@
+{
+  "backend":"portable-validation",
+  "mode":"ordered",
+  "seed":1000,
+  "philosophers":7,
+  "cycles":100,
+  "think_ms":15,
+  "eat_ms":2,
+  "jitter_ms":1,
+  "timeout_ms":1000,
+  "duration_ms":60000,
+  "elapsed_ms":2100.738708,
+  "completed":700,
+  "throughput_ops_s":333.216119,
+  "mean_wait_ms":0.641769,
+  "max_wait_ms":11.254958,
+  "resource_utilization":0.238755,
+  "timeouts":0,
+  "violations":0,
+  "errors":0,
+  "deadline":false,
+  "success":true,
+  "workers":[
+    {"id":0,"tid":4029422,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":109.007668,"wait_success_ms":108.973209,"max_wait_ms":11.254958,"eating_ms":243.400792},
+    {"id":1,"tid":4029423,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":64.405207,"wait_success_ms":64.357499,"max_wait_ms":7.511250,"eating_ms":248.476333},
+    {"id":2,"tid":4029424,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":74.413874,"wait_success_ms":74.377916,"max_wait_ms":7.515250,"eating_ms":246.555581},
+    {"id":3,"tid":4029425,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":43.987546,"wait_success_ms":43.950047,"max_wait_ms":3.866834,"eating_ms":251.362041},
+    {"id":4,"tid":4029426,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":55.026457,"wait_success_ms":54.982080,"max_wait_ms":5.771792,"eating_ms":254.586545},
+    {"id":5,"tid":4029427,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":45.148044,"wait_success_ms":45.091705,"max_wait_ms":3.761917,"eating_ms":261.734783},
+    {"id":6,"tid":4029428,"completed":100,"attempts":100,"timeouts":0,"wait_total_ms":57.544451,"wait_success_ms":57.505502,"max_wait_ms":7.525041,"eating_ms":249.353758}
+  ]
+}

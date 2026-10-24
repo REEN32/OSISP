@@ -7,5 +7,7 @@ build*/
 **/Release/
 *.user
 __pycache__/
-report/qa/
+report/qa*/
 .DS_Store
+/lab04-sync.zip
+/lab04-history.bundle
