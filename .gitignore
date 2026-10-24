@@ -1,0 +1,11 @@
+.vs/
+**/.vs/
+build*/
+**/ARM64/
+**/x64/
+**/Debug/
+**/Release/
+*.user
+__pycache__/
+report/qa/
+.DS_Store
