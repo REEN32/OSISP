@@ -1,30 +1,15 @@
-﻿// Lab 4, variant 4, STUDENT_ID=027. Self-contained Visual Studio source.
-// Create a C++ Console App, replace its .cpp with this file, Ctrl+F5.
-// C++17 or newer. No CMake, Python or project-local headers required.
-// Menu option 5 generates real measurements, CSV tables and SVG graphs.
-#include <filesystem>
-#include <utility>
-#include <chrono>
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-#if defined(_WIN32) && !defined(LAB_PORTABLE)
+﻿// Лабораторная работа 4. Вариант 4. STUDENT_ID = 027.
+// Windows, Visual Studio, C++17. Один исходный файл.
 #define NOMINMAX
 #include <windows.h>
 #include <process.h>
-#else
-#include <condition_variable>
-#include <mutex>
-#include <thread>
-#include <functional>
-#ifdef __APPLE__
-#include <pthread.h>
-#endif
-#endif
-
+#include <cerrno>
+#include <filesystem>
+#include <utility>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
 namespace os {
-#if defined(_WIN32) && !defined(LAB_PORTABLE)
-inline constexpr const char* backend = "windows-api";
 inline std::runtime_error error(const char* name) {
     return std::runtime_error(std::string(name) + " GetLastError=" + std::to_string(GetLastError()));
 }
@@ -76,7 +61,12 @@ using Entry = unsigned (__stdcall *)(void*);
 class Thread {
     Handle h_;
 public:
-    Thread(Entry entry, void* arg): h_(reinterpret_cast<HANDLE>(_beginthreadex(nullptr, 0, entry, arg, 0, nullptr))) {}
+    static HANDLE create(Entry entry, void* arg) {
+        const uintptr_t h = _beginthreadex(nullptr, 0, entry, arg, 0, nullptr);
+        if (!h) throw std::runtime_error("_beginthreadex errno=" + std::to_string(errno));
+        return reinterpret_cast<HANDLE>(h);
+    }
+    Thread(Entry entry, void* arg): h_(create(entry, arg)) {}
     void join() {
         DWORD r = WaitForSingleObject(h_.get(), 5000);
         if (r != WAIT_OBJECT_0) throw std::runtime_error("Thread join failed or exceeded 5 s");
@@ -89,49 +79,6 @@ inline double now_ms() {
     return double(x.QuadPart) * 1000.0 / f;
 }
 #define THREAD_ENTRY unsigned __stdcall
-#else
-inline constexpr const char* backend = "portable-validation";
-class Event {
-    std::mutex m_; std::condition_variable cv_; bool signaled_ = false;
-public:
-    void set() { { std::lock_guard<std::mutex> g(m_); signaled_ = true; } cv_.notify_all(); }
-    bool wait(uint32_t ms) {
-        std::unique_lock<std::mutex> g(m_);
-        return cv_.wait_for(g, std::chrono::milliseconds(ms), [&] { return signaled_; });
-    }
-};
-class Mutex {
-    std::timed_mutex m_;
-public:
-    bool acquire(Event& stop, uint32_t ms) {
-        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
-        do {
-            if (stop.wait(0)) return false;
-            auto left = std::chrono::duration_cast<std::chrono::milliseconds>(end - std::chrono::steady_clock::now()).count();
-            if (m_.try_lock_for(std::chrono::milliseconds(left > 10 ? 10 : (left > 0 ? left : 0)))) return true;
-        } while (std::chrono::steady_clock::now() < end);
-        return false;
-    }
-    void release() { m_.unlock(); }
-};
-using Lock = std::mutex;
-using Entry = unsigned (*)(void*);
-class Thread {
-    std::thread t_;
-public:
-    Thread(Entry entry, void* arg): t_([=] { entry(arg); }) {}
-    void join() { t_.join(); }
-};
-inline uint64_t tid() {
-#ifdef __APPLE__
-    uint64_t id = 0; pthread_threadid_np(nullptr, &id); return id;
-#else
-    return std::hash<std::thread::id>{}(std::this_thread::get_id());
-#endif
-}
-inline double now_ms() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-#define THREAD_ENTRY unsigned
-#endif
 class Guard {
     Lock& l_;
 public:
@@ -142,60 +89,23 @@ public:
 }
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <sstream>
 #include <vector>
 
 struct Config {
-    int philosophers = 5, cycles = 100, think = 2, eat = 2, jitter = 1;
+    int philosophers = 5, cycles = 100, think = 2, eat = 2;
     uint32_t seed = 1000, timeout = 1000, duration = 60000;
-    bool quiet = false, individual = false;
-    std::string mode = "asymmetric", json;
+    bool quiet = false;
 };
 int number(const std::string& s, int lo, int hi) {
     size_t end = 0; long long n = std::stoll(s, &end);
     if (end != s.size() || n < lo || n > hi) throw std::runtime_error("Invalid numeric value: " + s);
     return static_cast<int>(n);
-}
-Config parse(int argc, char** argv) {
-    Config c;
-    // Preset is applied first, explicit arguments always override it.
-    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--individual") c.individual = true;
-    if (c.individual) { c.seed = 3619; c.cycles = 235; }
-    for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        if (a == "--individual") continue;
-        if (a == "--quiet") { c.quiet = true; continue; }
-        if (a == "--help") {
-            std::cout << "Variant 4, IDs 0..N-1, left=i, right=(i+1)%N\n"
-                      << "--individual (ID=027 seed=3619 cycles=235) --quiet\n"
-                      << "--philosophers 2..32 --cycles 1..1000000 --think-ms 0..10000\n"
-                      << "--eat-ms 0..10000 --jitter-ms 0..1000 --seed 0..2147483647\n"
-                      << "--timeout-ms 1..60000 --duration-ms 1..3600000\n"
-                      << "--mode asymmetric|ordered --json FILE\n";
-            std::exit(0);
-        }
-        if (++i == argc) throw std::runtime_error("Missing value for " + a);
-        const std::string v = argv[i];
-        if (a == "--philosophers") c.philosophers = number(v, 2, 32);
-        else if (a == "--cycles") c.cycles = number(v, 1, 1000000);
-        else if (a == "--think-ms") c.think = number(v, 0, 10000);
-        else if (a == "--eat-ms") c.eat = number(v, 0, 10000);
-        else if (a == "--jitter-ms") c.jitter = number(v, 0, 1000);
-        else if (a == "--seed") c.seed = static_cast<uint32_t>(number(v, 0, 2147483647));
-        else if (a == "--timeout-ms") c.timeout = static_cast<uint32_t>(number(v, 1, 60000));
-        else if (a == "--duration-ms") c.duration = static_cast<uint32_t>(number(v, 1, 3600000));
-        else if (a == "--json") c.json = v;
-        else if (a == "--mode" && (v == "asymmetric" || v == "ordered")) c.mode = v;
-        else throw std::runtime_error("Unknown argument or value: " + a + " " + v);
-    }
-    return c;
 }
 struct Stats {
     uint64_t tid = 0;
@@ -212,7 +122,7 @@ struct Context {
     std::vector<Worker> workers;
     os::Event start, stop, done;
     os::Lock monitor, logger;
-    std::atomic<int> violations{0}, errors{0}, exited{0};
+    volatile LONG violations = 0, errors = 0, exited = 0;
     double started = 0;
     explicit Context(Config cfg): c(std::move(cfg)), owners(c.philosophers, -1), eating(c.philosophers, false) {
         for (int i = 0; i < c.philosophers; ++i) {
@@ -228,7 +138,7 @@ struct Context {
         if (resource >= 0) std::cout << " RESOURCE=" << resource;
         std::cout << '\n';
     }
-    void check(bool condition) { if (!condition) ++violations; }
+    void check(bool condition) { if (!condition) InterlockedIncrement(&violations); }
 };
 // A guard is created before acquisition, so all acquired resources have an owner.
 class ForkGuard {
@@ -248,16 +158,12 @@ public:
         try {
             // Monitor release precedes kernel release; new owner cannot enter yet.
             { os::Guard g(x_.monitor); x_.check(x_.owners[fork_] == id_); x_.owners[fork_] = -1; }
-            x_.log(id_, "RELEASED", fork_);
             x_.forks[fork_]->release();
-        } catch (...) { ++x_.errors; try { x_.stop.set(); } catch (...) {} }
+            x_.log(id_, "RELEASED", fork_);
+        } catch (...) { InterlockedIncrement(&x_.errors); try { x_.stop.set(); } catch (...) {} }
     }
 };
 uint32_t random_next(uint32_t& s) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
-uint32_t delay(int base, int jitter, uint32_t& s) {
-    int delta = static_cast<int>(random_next(s) % static_cast<uint32_t>(2*jitter+1)) - jitter;
-    return static_cast<uint32_t>(std::max(0, base+delta));
-}
 void run(Worker& w) {
     Context& x = *w.ctx; auto& s = w.stats; const int id = w.id, n = x.c.philosophers;
     s.tid = os::tid();
@@ -266,11 +172,10 @@ void run(Worker& w) {
     if (!rng) rng = 1;
     for (int cycle = 0; cycle < x.c.cycles && !x.stop.wait(0); ++cycle) {
         x.log(id, "THINKING");
-        if (x.stop.wait(delay(x.c.think, x.c.jitter, rng))) break;
+        if (x.stop.wait(static_cast<uint32_t>(x.c.think))) break;
         int left = id, right = (id+1)%n;
         int first = id%2 == 0 ? left : right;
         int second = id%2 == 0 ? right : left;
-        if (x.c.mode == "ordered") { first = std::min(left, right); second = std::max(left, right); }
         const double waiting = os::now_ms();
         const double eating_before = s.eating_ms;
         bool ate = false;
@@ -296,7 +201,7 @@ void run(Worker& w) {
                         }
                         x.log(id, "EATING");
                         const double eating_start = os::now_ms();
-                        bool interrupted = x.stop.wait(delay(x.c.eat, x.c.jitter, rng));
+                        bool interrupted = x.stop.wait(1 + random_next(rng) % static_cast<uint32_t>(x.c.eat));
                         s.eating_ms += os::now_ms() - eating_start;
                         { os::Guard g(x.monitor); x.eating[id] = false; }
                         if (!interrupted) { ++s.completed; s.wait_success += wait; ate = true; }
@@ -317,11 +222,11 @@ THREAD_ENTRY entry(void* arg) {
     auto& w = *static_cast<Worker*>(arg); Context& x = *w.ctx;
     try { run(w); }
     catch (const std::exception& e) {
-        ++x.errors;
+        InterlockedIncrement(&x.errors);
         { os::Guard g(x.logger); std::cerr << "P" << w.id << " ERROR " << e.what() << '\n'; }
         try { x.stop.set(); } catch (...) {}
     }
-    if (++x.exited == x.c.philosophers) { try { x.done.set(); } catch (...) { ++x.errors; } }
+    if (InterlockedIncrement(&x.exited) == x.c.philosophers) { try { x.done.set(); } catch (...) { InterlockedIncrement(&x.errors); } }
     return 0;
 }
 struct Measurement {
@@ -350,44 +255,27 @@ int execute(Config c, Measurement* measurement = nullptr) {
     }
     for (auto& t : threads) t->join();
     const double elapsed = os::now_ms() - x.started;
-    int completed = 0, timeouts = 0; double wait = 0, max_wait = 0, eat = 0;
+    int completed = 0, timeouts = 0; double wait = 0, max_wait = 0;
     for (auto& w : x.workers) {
         completed += w.stats.completed; timeouts += w.stats.timeouts;
-        wait += w.stats.wait_success; max_wait = std::max(max_wait, w.stats.wait_max); eat += w.stats.eating_ms;
+        wait += w.stats.wait_success; max_wait = std::max(max_wait, w.stats.wait_max);
     }
     for (int i = 0; i < x.c.philosophers; ++i) { x.check(x.owners[i] == -1); x.check(!x.eating[i]); }
     const bool success = !deadline && x.errors == 0 && x.violations == 0 && completed == x.c.philosophers*x.c.cycles;
-    std::ostringstream out;
-    out << std::fixed << std::setprecision(6)
-        << "{\n  \"backend\":\"" << os::backend << "\",\n  \"mode\":\"" << x.c.mode
-        << "\",\n  \"seed\":" << x.c.seed << ",\n  \"philosophers\":" << x.c.philosophers
-        << ",\n  \"cycles\":" << x.c.cycles << ",\n  \"think_ms\":" << x.c.think
-        << ",\n  \"eat_ms\":" << x.c.eat << ",\n  \"jitter_ms\":" << x.c.jitter
-        << ",\n  \"timeout_ms\":" << x.c.timeout << ",\n  \"duration_ms\":" << x.c.duration
-        << ",\n  \"elapsed_ms\":" << elapsed << ",\n  \"completed\":" << completed
-        << ",\n  \"throughput_ops_s\":" << 1000.0*completed/elapsed
-        << ",\n  \"mean_wait_ms\":" << (completed ? wait/completed : 0)
-        << ",\n  \"max_wait_ms\":" << max_wait << ",\n  \"resource_utilization\":" << 2*eat/(x.c.philosophers*elapsed)
-        << ",\n  \"timeouts\":" << timeouts << ",\n  \"violations\":" << x.violations.load()
-        << ",\n  \"errors\":" << x.errors.load() << ",\n  \"deadline\":" << (deadline ? "true" : "false")
-        << ",\n  \"success\":" << (success ? "true" : "false") << ",\n  \"workers\":[\n";
-    for (size_t i = 0; i < x.workers.size(); ++i) {
-        auto& s = x.workers[i].stats;
-        out << "    {\"id\":" << i << ",\"tid\":" << s.tid << ",\"completed\":" << s.completed
-            << ",\"attempts\":" << s.attempts << ",\"timeouts\":" << s.timeouts
-            << ",\"wait_total_ms\":" << s.wait_total << ",\"wait_success_ms\":" << s.wait_success << ",\"max_wait_ms\":" << s.wait_max
-            << ",\"eating_ms\":" << s.eating_ms << "}" << (i+1<x.workers.size() ? "," : "") << '\n';
-    }
-    out << "  ]\n}\n";
-    std::cout << "BACKEND=" << os::backend << " COMPLETED=" << completed << '/' << x.c.philosophers*x.c.cycles
-              << " ELAPSED_MS=" << elapsed << " TIMEOUTS=" << timeouts << " VIOLATIONS=" << x.violations
-              << " ERRORS=" << x.errors << " STATUS=" << (success ? "OK" : "INCOMPLETE") << '\n';
-    if (!x.c.json.empty()) {
-        std::ofstream f(x.c.json); if (!f) throw std::runtime_error("Cannot create JSON: " + x.c.json);
-        f << out.str(); f.close(); if (!f) throw std::runtime_error("Cannot write JSON");
+    std::cout << std::fixed << std::setprecision(3)
+              << "COMPLETED=" << completed << '/' << x.c.philosophers*x.c.cycles
+              << " ELAPSED_MS=" << elapsed << " TIMEOUTS=" << timeouts
+              << " VIOLATIONS=" << x.violations << " ERRORS=" << x.errors
+              << " STATUS=" << (success ? "OK" : "INCOMPLETE") << '\n';
+    std::cout << "ID TID COMPLETED TIMEOUTS MEAN_WAIT_MS MAX_WAIT_MS\n";
+    for (const auto& w : x.workers) {
+        const auto& s = w.stats;
+        std::cout << w.id << ' ' << s.tid << ' ' << s.completed << ' '
+                  << s.timeouts << ' ' << (s.completed ? s.wait_success/s.completed : 0)
+                  << ' ' << s.wait_max << '\n';
     }
     if (measurement) *measurement = {elapsed, 1000.0*completed/elapsed,
-        completed ? wait/completed : 0, max_wait, completed, timeouts, x.violations.load()};
+        completed ? wait/completed : 0, max_wait, completed, timeouts, x.violations};
     return success ? 0 : 2;
 }
 
@@ -402,7 +290,7 @@ int input_number(const char* prompt, int fallback, int lo, int hi) {
     }
 }
 struct ExperimentRow {
-    std::string preset, mode;
+    std::string preset;
     int n, think, repeat;
     Measurement m;
 };
@@ -416,7 +304,7 @@ void chart(const std::filesystem::path& path, const std::vector<ExperimentRow>& 
       << "<rect width=\"1100\" height=\"520\" fill=\"white\"/><g font-family=\"Arial\" fill=\"black\">"
       << "<text x=\"550\" y=\"25\" text-anchor=\"middle\" font-size=\"18\">"
       << (waiting ? "Mean waiting for two forks (ms)" : "Throughput (completed cycles per second)")
-      << " | " << os::backend << "</text>";
+      << " | Windows Mutex</text>";
     for (int panel = 0; panel < 2; ++panel) {
         const std::string preset = panel == 0 ? "standard" : "individual";
         const double x0 = 80 + 550*panel, y0 = 365, height = 270;
@@ -435,13 +323,13 @@ void chart(const std::filesystem::path& path, const std::vector<ExperimentRow>& 
         }
         f << "<text x=\"" << x0+185 << "\" y=\"410\" text-anchor=\"middle\">Number of philosophers</text>";
         int legend = 0;
-        for (const std::string mode : {"asymmetric", "ordered"}) for (int think : {2,15}) {
+        for (int think : {2,15}) {
             const char* color = think == 2 ? "#2166ac" : "#b35806";
-            const char* dash = mode == "ordered" ? " stroke-dasharray=\"6 4\"" : "";
+            const char* dash = "";
             std::vector<std::pair<double,double>> points;
             for (int n : {5,7}) {
                 double sum = 0; int count = 0;
-                for (const auto& row : rows) if (row.preset == preset && row.mode == mode && row.n == n && row.think == think) {
+                for (const auto& row : rows) if (row.preset == preset && row.n == n && row.think == think) {
                     sum += waiting ? row.m.mean_wait : row.m.throughput; ++count;
                 }
                 if (count != 3) throw std::runtime_error("Graph needs three real repetitions");
@@ -453,7 +341,7 @@ void chart(const std::filesystem::path& path, const std::vector<ExperimentRow>& 
             for (auto point : points) f << "<circle cx=\"" << point.first << "\" cy=\"" << point.second << "\" r=\"4\" fill=\"" << color << "\"/>";
             const int lx = int(x0)+(legend%2)*205, ly = 445+(legend/2)*25;
             f << "<path d=\"M " << lx << ' ' << ly << " h 22\" stroke=\"" << color << "\" stroke-width=\"2\"" << dash << "/>"
-              << "<text x=\"" << lx+28 << "\" y=\"" << ly+4 << "\" font-size=\"11\">" << mode << ", think=" << think << " ms</text>";
+              << "<text x=\"" << lx+28 << "\" y=\"" << ly+4 << "\" font-size=\"11\">" << "think=" << think << " ms</text>";
             ++legend;
         }
     }
@@ -462,76 +350,77 @@ void chart(const std::filesystem::path& path, const std::vector<ExperimentRow>& 
 }
 int experiment_suite() {
     namespace fs = std::filesystem;
-    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-    const fs::path folder = "results_" + std::to_string(stamp);
-    if (!fs::create_directory(folder)) throw std::runtime_error("Cannot create output directory");
+    const fs::path folder = "results_" + std::to_string(GetTickCount64());
+    if (!fs::create_directory(folder)) throw std::runtime_error("Cannot create results directory");
     std::ofstream runs(folder/"runs.csv"), summary(folder/"summary.csv");
     if (!runs || !summary) throw std::runtime_error("Cannot create CSV files");
-    runs << "backend,preset,mode,philosophers,think_ms,repeat,elapsed_ms,throughput_ops_s,mean_wait_ms,max_wait_ms,completed,timeouts,violations\n";
-    summary << "backend,preset,mode,philosophers,think_ms,run1_ms,run2_ms,run3_ms,mean_ms,mean_throughput_ops_s,mean_wait_ms,max_wait_ms,timeouts,violations\n";
-    runs << std::fixed << std::setprecision(6); summary << std::fixed << std::setprecision(6);
+    runs << "preset,philosophers,cycles,seed,think_ms,repeat,elapsed_ms,throughput_ops_s,mean_wait_ms,max_wait_ms,completed,timeouts,violations\n";
+    summary << "preset,philosophers,think_ms,run1_ms,run2_ms,run3_ms,mean_ms,mean_throughput_ops_s,mean_wait_ms,max_wait_ms,timeouts,violations\n";
+    runs << std::fixed << std::setprecision(6);
+    summary << std::fixed << std::setprecision(6);
     std::vector<ExperimentRow> rows;
-    for (int individual : {0,1}) for (const std::string mode : {"asymmetric","ordered"})
-        for (int n : {5,7}) for (int think : {2,15}) {
-            double times[3]{}, sum_time=0, sum_q=0, sum_wait=0, max_wait=0;
-            int timeouts=0, violations=0;
-            const std::string preset = individual ? "individual" : "standard";
-            for (int repeat=1; repeat<=3; ++repeat) {
-                Config c; c.individual=individual!=0; c.cycles=individual?235:100; c.seed=individual?3619:1000;
-                c.philosophers=n; c.think=think; c.mode=mode; c.quiet=true;
-                c.json=(folder/(preset+"_"+mode+"_n"+std::to_string(n)+"_t"+std::to_string(think)+"_r"+std::to_string(repeat)+".json")).string();
-                std::cout << "\nRun " << rows.size()+1 << "/48: " << preset << ' ' << mode << " N=" << n << " THINK=" << think << " repeat=" << repeat << '\n';
-                Measurement m;
-                const int result = execute(c, &m);
-                if (result != 0) throw std::runtime_error("Experiment failed; partial files preserved, no graphs generated");
-                rows.push_back({preset,mode,n,think,repeat,m});
-                runs << os::backend << ',' << preset << ',' << mode << ',' << n << ',' << think << ',' << repeat << ','
-                     << m.elapsed << ',' << m.throughput << ',' << m.mean_wait << ',' << m.max_wait << ',' << m.completed << ',' << m.timeouts << ',' << m.violations << '\n';
-                times[repeat-1]=m.elapsed; sum_time+=m.elapsed; sum_q+=m.throughput; sum_wait+=m.mean_wait;
-                max_wait=std::max(max_wait,m.max_wait); timeouts+=m.timeouts; violations+=m.violations;
-            }
-            summary << os::backend << ',' << preset << ',' << mode << ',' << n << ',' << think << ','
-                    << times[0] << ',' << times[1] << ',' << times[2] << ',' << sum_time/3 << ',' << sum_q/3 << ','
-                    << sum_wait/3 << ',' << max_wait << ',' << timeouts << ',' << violations << '\n';
+    for (int individual : {0,1}) for (int n : {5,7}) for (int think : {2,15}) {
+        double times[3]{}, sum_time=0, sum_q=0, sum_wait=0, max_wait=0;
+        int timeouts=0, violations=0;
+        const std::string preset = individual ? "individual" : "standard";
+        for (int repeat=1; repeat<=3; ++repeat) {
+            Config c;
+            c.cycles=individual?235:100; c.seed=individual?3619:1000;
+            c.philosophers=n; c.think=think; c.quiet=true;
+            std::cout << "\nRun " << rows.size()+1 << "/24: " << preset
+                      << " N=" << n << " THINK=" << think << " repeat=" << repeat << '\n';
+            Measurement m;
+            if (execute(c, &m) != 0)
+                throw std::runtime_error("Experiment failed; partial CSV saved, graphs not generated");
+            rows.push_back({preset,n,think,repeat,m});
+            runs << preset << ',' << n << ',' << c.cycles << ',' << c.seed << ','
+                 << think << ',' << repeat << ',' << m.elapsed << ',' << m.throughput << ','
+                 << m.mean_wait << ',' << m.max_wait << ',' << m.completed << ','
+                 << m.timeouts << ',' << m.violations << '\n';
+            times[repeat-1]=m.elapsed; sum_time+=m.elapsed;
+            sum_q+=m.throughput; sum_wait+=m.mean_wait;
+            max_wait=std::max(max_wait,m.max_wait);
+            timeouts+=m.timeouts; violations+=m.violations;
         }
+        summary << preset << ',' << n << ',' << think << ','
+                << times[0] << ',' << times[1] << ',' << times[2] << ',' << sum_time/3 << ','
+                << sum_q/3 << ',' << sum_wait/3 << ',' << max_wait << ','
+                << timeouts << ',' << violations << '\n';
+    }
     runs.close(); summary.close();
     if (!runs || !summary) throw std::runtime_error("Cannot write CSV files");
-    chart(folder/"throughput.svg",rows,false); chart(folder/"waiting.svg",rows,true);
-    std::cout << "\n48 runs completed. CSV tables, 48 JSON files and two SVG graphs:\n"
-              << fs::absolute(folder).string() << "\nOpen SVG files in a browser.\n";
+    chart(folder/"throughput.svg",rows,false);
+    chart(folder/"waiting.svg",rows,true);
+    std::cout << "\n24 runs completed. CSV tables and two SVG graphs:\n"
+              << fs::absolute(folder).string() << '\n';
     return 0;
 }
-int menu() {
-    std::cout << "\nLAB 4 | VARIANT 4 | STUDENT_ID=027\n"
-              << "1. Demonstration: 5 philosophers, 5 cycles, detailed log\n"
-              << "2. Standard: 5 philosophers, 100 cycles\n"
-              << "3. Individual: seed=3619, 235 cycles\n"
-              << "4. Custom parameters\n"
-              << "5. All 48 experiments + CSV tables + two SVG graphs\n"
-              << "0. Exit\n";
-    const int choice=input_number("Choice",1,0,5);
-    if (choice==0) return 0;
-    if (choice==5) return experiment_suite();
-    Config c;
-    if (choice==1) c.cycles=5;
-    if (choice==2) c.quiet=true;
-    if (choice==3) { c.individual=true; c.cycles=235; c.seed=3619; c.quiet=true; }
-    if (choice==4) {
-        c.philosophers=input_number("Philosophers",5,2,32);
-        c.cycles=input_number("Cycles per philosopher",235,1,1000000);
-        c.think=input_number("Thinking time ms",2,0,10000);
-        c.eat=input_number("Eating time ms",2,0,10000);
-        c.jitter=input_number("Jitter ms",1,0,1000);
-        c.seed=static_cast<uint32_t>(input_number("Seed",3619,0,2147483647));
-        c.timeout=static_cast<uint32_t>(input_number("Pair acquisition timeout ms",1000,1,60000));
-        c.duration=static_cast<uint32_t>(input_number("Experiment deadline ms",60000,1,3600000));
-        c.quiet=input_number("Detailed log: 0=yes, 1=no",0,0,1)!=0;
-        c.mode=input_number("Mode: 0=asymmetric, 1=ordered",0,0,1)?"ordered":"asymmetric";
+int main() {
+    try {
+        std::cout << "LAB 4 | VARIANT 4 | STUDENT_ID=027\n"
+                  << "1. Standard experiment (100 cycles, seed=1000)\n"
+                  << "2. Individual experiment (235 cycles, seed=3619)\n"
+                  << "3. Custom parameters\n"
+                  << "4. All 24 experiments + CSV + two graphs\n"
+                  << "0. Exit\n";
+        const int choice=input_number("Choice",1,0,4);
+        if (choice==0) return 0;
+        if (choice==4) return experiment_suite();
+        Config c;
+        if (choice==2) { c.cycles=235; c.seed=3619; }
+        if (choice==3) {
+            c.philosophers=input_number("Philosophers",5,2,32);
+            c.cycles=input_number("Cycles per philosopher",100,1,1000000);
+            c.think=input_number("Thinking time ms",2,0,10000);
+            c.eat=input_number("Maximum eating time ms (random 1..value)",2,1,10000);
+            c.seed=static_cast<uint32_t>(input_number("Seed",3619,0,2147483647));
+            c.timeout=static_cast<uint32_t>(input_number("Pair acquisition timeout ms",1000,1,60000));
+            c.duration=static_cast<uint32_t>(input_number("Maximum experiment duration ms",60000,1,3600000));
+        }
+        c.quiet=input_number("Detailed log: 1=yes, 0=no",1,0,1)==0;
+        return execute(c);
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << '\n';
+        return 1;
     }
-    c.json="last_result.json";
-    return execute(c);
-}
-int main(int argc, char** argv) {
-    try { return argc==1 ? menu() : execute(parse(argc,argv)); }
-    catch (const std::exception& e) { std::cerr << "ERROR: " << e.what() << '\n'; return 1; }
 }
