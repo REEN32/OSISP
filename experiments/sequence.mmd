@@ -1,0 +1,21 @@
+sequenceDiagram
+ participant A as Клиент Alice
+ participant S as TCP-сервер
+ participant B as Клиент Bob
+ Note over S: Запуск сервера и listen
+ A->>S: TCP connect, LOGIN alice
+ S-->>A: OK, END
+ B->>S: TCP connect, LOGIN bob
+ S-->>B: OK, END
+ B->>S: LOGOUT
+ S-->>B: OK; закрытие соединения
+ A->>S: SEND bob, текст
+ S->>S: Проверка лимита; постановка в FIFO
+ S-->>A: OK или ERROR QUEUE_FULL
+ B->>S: TCP connect, LOGIN bob
+ S-->>B: MESSAGE id, текст
+ B->>S: ACK id
+ S->>S: Удаление подтверждённой записи
+ S-->>B: END
+ B->>S: LOGOUT
+ S-->>B: OK
