@@ -38,7 +38,7 @@ static mutex state_mutex, log_mutex;
 
 struct Message
 {
-    uint64_t id;
+    uint64_t id = 0;
     string from, text;
 };
 
@@ -49,8 +49,6 @@ static atomic<bool> running{true};
 static mutex clients_mutex;
 static set<sock_t> clients;
 
-// Idle clients may stay connected indefinitely. The socket receive timeout applies
-// only after the first byte of a new frame is ready, or while waiting for an ACK.
 static bool wait_for_request(sock_t s)
 {
     while (running)
